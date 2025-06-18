@@ -396,11 +396,11 @@ class Encoder(nn.Module):
 
         # end
         self.norm_out = Normalize(block_in)
-        self.conv_out = torch.nn.Conv3d(block_in,
-                                        2*z_channels if double_z else z_channels,
-                                        kernel_size=3,
-                                        stride=1,
-                                        padding=1)
+        # self.conv_out = torch.nn.Conv3d(block_in,
+        #                                 2*z_channels if double_z else z_channels,
+        #                                 kernel_size=3,
+        #                                 stride=1,
+        #                                 padding=1)
 
 
     def forward(self, x):
@@ -429,7 +429,7 @@ class Encoder(nn.Module):
         # end
         h = self.norm_out(h)
         h = nonlinearity(h)
-        h = self.conv_out(h)
+        # h = self.conv_out(h)
         return h
 
 

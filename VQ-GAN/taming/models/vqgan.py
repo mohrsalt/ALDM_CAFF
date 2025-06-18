@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
-
+import copy
 from main import instantiate_from_config
 
 from taming.models.normalization import SPADEResnetBlock, SPADEGenerator
@@ -12,6 +12,21 @@ from taming.modules.vqvae.quantize import VectorQuantizer2 as VectorQuantizer
 from taming.modules.vqvae.quantize import GumbelQuantize
 from taming.modules.vqvae.quantize import EMAVectorQuantizer
 
+class CHattnblock(nn.Module):
+    def __init__(self, dim=64):
+        super().__init__()
+        self.attn = nn.Sequential(
+            nn.AdaptiveAvgPool3d(1),
+            nn.Conv3d(dim, dim, 1),
+            nn.SiLU(),
+            nn.Conv3d(dim, dim, 1),
+            nn.Sigmoid())
+
+    def forward(self, x):
+        w = self.attn(x)
+        # print(w.shape)
+        return w
+    
 class VQModel(pl.LightningModule):
     def __init__(self,
                  ddconfig,
@@ -31,14 +46,26 @@ class VQModel(pl.LightningModule):
         super().__init__()
         self.image_key = image_key
         self.encoder = Encoder(**ddconfig)
+        ddconfig_new = copy.deepcopy(ddconfig)
+        ddconfig_new['in_channels'] = 3
+        self.encoder_complementary = Encoder(**ddconfig_new)
         self.decoder = Decoder(**ddconfig)
         self.loss = instantiate_from_config(lossconfig)
         self.quantize = VectorQuantizer(n_embed, embed_dim, beta=0.25,
                                         remap=remap, sane_index_shape=sane_index_shape)
         self.quant_conv = torch.nn.Conv3d(ddconfig["z_channels"], embed_dim, 1)
+
         self.post_quant_conv = torch.nn.Conv3d(embed_dim, ddconfig["z_channels"], 1)
+        self.attn_blocks = nn.ModuleList([CHattnblock(128*2) for i in range(5)])
+        self.conv1 = nn.Conv3d(512, 256, 1)
+        
         self.modalities = modalities
         self.spade = SPADEGenerator(modalities)
+        self.conv_out_enc = torch.nn.Conv3d(256,
+                                         3,
+                                         kernel_size=3,
+                                        stride=1,
+                                         padding=1)
         self.stage = stage
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
@@ -62,10 +89,19 @@ class VQModel(pl.LightningModule):
 
     def encode(self, x):
         h = self.encoder(x)
+        return h
+        
+    def encode_comp(self, x):
+        h = self.encoder_complementary(x)
+        return h
+    
+    def quantizer(self, h):
+        h = self.conv_out_enc(h)
         h = self.quant_conv(h)
         quant, emb_loss, info = self.quantize(h)
-        return quant, emb_loss, info
 
+        return quant, emb_loss, info
+    
     def decode(self, quant):
         quant = self.post_quant_conv(quant)
         dec = self.decoder(quant)
@@ -77,7 +113,9 @@ class VQModel(pl.LightningModule):
         return dec
 
     def forward(self, input, target=None):
-        quant, diff, _ = self.encode(input)
+        h=self.encode(input)
+        #caff
+        quant, diff, _ = self.quantizer(h)
         if target is not None: quant = self.spade(quant, target)
         dec = self.decode(quant)
         return dec, diff
@@ -86,6 +124,43 @@ class VQModel(pl.LightningModule):
         x = batch[k]
         
         return x.float()
+    
+    def caff(self, net_z, chosen_sources):
+        """
+        net_z: Tensor of shape (B, 4, C, H, W)
+        chosen_sources: list of 3 indices from [0, 1, 2, 3] indicating input modalities
+        """
+        comp_features = net_z[:, -1] 
+        x_fusion_s = torch.zeros_like(comp_features)
+        x_fusion_h = torch.zeros_like(comp_features)
+
+        raw_attns = []  
+        for i, src in enumerate(chosen_sources):
+            attn_map = self.attn_blocks[src](net_z[:, i]) 
+            raw_attns.append(attn_map.unsqueeze(1))  
+
+    
+        comp_attn = self.attn_blocks[-1](net_z[:, -1]).unsqueeze(1)  
+        raw_attns.append(comp_attn)
+
+        x_attns = torch.cat(raw_attns, dim=1)  
+
+    
+        for i in range(3):
+            x_fusion_s += net_z[:, i] * x_attns[:, i]
+        x_fusion_s += net_z[:, -1] * x_attns[:, -1]
+
+    
+        x_attns_soft = F.softmax(x_attns[:, :3], dim=1)  
+        x_attns = torch.cat([x_attns_soft, x_attns[:, 3:]], dim=1)
+
+        for i in range(3):
+            x_fusion_h += net_z[:, i] * x_attns[:, i]
+        x_fusion_h += net_z[:, -1]  # raw residual (no attention weight)
+
+        
+        x_fusion = self.conv1(torch.cat((x_fusion_s, x_fusion_h), dim=1))  
+        return x_fusion
 
     def training_step(self, batch, batch_idx, optimizer_idx):
         source = random.choice(self.modalities)
