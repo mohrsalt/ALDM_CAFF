@@ -48,16 +48,16 @@ class VQModel(pl.LightningModule):
         self.encoder = Encoder(**ddconfig)
         ddconfig_new = copy.deepcopy(ddconfig)
         ddconfig_new['in_channels'] = 3
-        self.encoder_complementary = Encoder(**ddconfig_new)
+        self.encoder_complementary = Encoder(**ddconfig_new) #new
         self.decoder = Decoder(**ddconfig)
         self.loss = instantiate_from_config(lossconfig)
         self.quantize = VectorQuantizer(n_embed, embed_dim, beta=0.25,
-                                        remap=remap, sane_index_shape=sane_index_shape)
+                                        remap=remap, sane_index_shape=sane_index_shape) 
         self.quant_conv = torch.nn.Conv3d(ddconfig["z_channels"], embed_dim, 1)
 
         self.post_quant_conv = torch.nn.Conv3d(embed_dim, ddconfig["z_channels"], 1)
-        self.attn_blocks = nn.ModuleList([CHattnblock(128*2) for i in range(5)])
-        self.conv1 = nn.Conv3d(512, 256, 1)
+        self.attn_blocks = nn.ModuleList([CHattnblock(128*2) for i in range(5)]) #new
+        self.conv1 = nn.Conv3d(512, 256, 1) #new
         
         self.modalities = modalities
         self.spade = SPADEGenerator(modalities)
@@ -65,7 +65,7 @@ class VQModel(pl.LightningModule):
                                          3,
                                          kernel_size=3,
                                         stride=1,
-                                         padding=1)
+                                         padding=1) #new
         self.stage = stage
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
@@ -263,18 +263,24 @@ class VQModel(pl.LightningModule):
         lr = self.learning_rate
         if self.stage == 1:
             for p in self.spade.parameters(): p.requires_grad = False
+            for block in self.attn_blocks:
+                for param in block.parameters():
+                    param.requires_grad = False
+            for p in self.encoder_complementary.parameters(): p.requires_grad = False
+            for p in self.conv1.parameters(): p.requires_grad = False
             for p in self.encoder.parameters(): p.requires_grad = True
             for p in self.decoder.parameters(): p.requires_grad = True
             opt_ae = torch.optim.Adam(list(self.encoder.parameters()) +
                                   list(self.decoder.parameters()) +
                                   list(self.quantize.parameters()) +
                                   list(self.quant_conv.parameters()) +
-                                  list(self.post_quant_conv.parameters()), lr=lr, betas=(0.5, 0.9))
+                                  list(self.post_quant_conv.parameters()) +
+                                  list(self.conv_out_enc.parameters()), lr=lr, betas=(0.5, 0.9))
         else:
             for p in self.spade.parameters(): p.requires_grad = True
             for p in self.encoder.parameters(): p.requires_grad = False
             for p in self.decoder.parameters(): p.requires_grad = False
-            opt_ae = torch.optim.Adam(list(self.spade.parameters()), lr=lr, betas=(0.5, 0.9))
+            opt_ae = torch.optim.Adam(list(self.spade.parameters()),list(self.encoder_complementary.parameters()),list(self.conv1.parameters()),list(self.attn_blocks.parameters()), lr=lr, betas=(0.5, 0.9))
 
         opt_disc = torch.optim.Adam(self.loss.discriminator.parameters(), lr=lr, betas=(0.5, 0.9))
         return [opt_ae, opt_disc], []
@@ -284,19 +290,27 @@ class VQModel(pl.LightningModule):
 
     def log_images(self, batch, **kwargs):
         log = dict()
-        source = random.choice(self.modalities)
         target = random.choice(self.modalities)
-        x_src = self.get_input(batch, source)
+        source = [m for m in self.modalities if m != target]
+        src_idx=self.modalities_to_indices(source)
         x_tar = self.get_input(batch, target)
-        x_src = x_src.to(self.device)
+        x_src_1 = self.get_input(batch, source[0])
+        x_src_2 = self.get_input(batch, source[1])
+        x_src_3 = self.get_input(batch, source[2])
+        input=torch.concat([x_src_1,x_src_2,x_src_3],dim=1)
+
+
+
+
+        x_tar = self.get_input(batch, target)
         x_tar = x_tar.to(self.device)
-        if self.stage == 1: target = None
-        xrec, _ = self(x_src, target)
-        if x_src.shape[1] > 3:
-            assert xrec.shape[1] > 3
-            x_src = self.to_rgb(x_src)
-            xrec = self.to_rgb(xrec)
-        log["source"] = x_src
+        if self.stage == 1: 
+            target = None
+            src_idx=None
+            input=x_tar
+        xrec, _ = self(input, target,src_idx)
+
+        log["source"] = input
         log["target"] = x_tar
         if self.stage == 1: 
             log["recon"] = xrec
