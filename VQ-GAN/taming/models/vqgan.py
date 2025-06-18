@@ -112,8 +112,16 @@ class VQModel(pl.LightningModule):
         dec = self.decode(quant_b)
         return dec
 
-    def forward(self, input, target=None):
-        h=self.encode(input)
+    def forward(self, input, target=None, input_modals=None):
+        if target is None:
+            h=self.encode(input)
+        else:
+            h1=self.encode(input[:,0])
+            h2=self.encode(input[:,1])
+            h3=self.encode(input[:,2])
+            h_comp=self.encoder_complementary(input)
+            h_concat=torch.concat([h1,h2,h3,h_comp],dim=1)
+            h=self.caff(h_concat,input_modals)
         #caff
         quant, diff, _ = self.quantizer(h)
         if target is not None: quant = self.spade(quant, target)
@@ -125,7 +133,7 @@ class VQModel(pl.LightningModule):
         
         return x.float()
     
-    def caff(self, net_z, chosen_sources):
+    def caff(self, net_z, chosen_sources): #check functional similarity to hfeconder
         """
         net_z: Tensor of shape (B, 4, C, H, W)
         chosen_sources: list of 3 indices from [0, 1, 2, 3] indicating input modalities
@@ -161,20 +169,35 @@ class VQModel(pl.LightningModule):
         
         x_fusion = self.conv1(torch.cat((x_fusion_s, x_fusion_h), dim=1))  
         return x_fusion
+    
+    def modalities_to_indices(self,source):
+        return [self.modalities.index(mod) for mod in source]
 
     def training_step(self, batch, batch_idx, optimizer_idx):
-        source = random.choice(self.modalities)
+        
         target = random.choice(self.modalities)
-        x_src = self.get_input(batch, source)
+        source = [m for m in self.modalities if m != target]
+        src_idx=self.modalities_to_indices(source)
         x_tar = self.get_input(batch, target)
+        x_src_1 = self.get_input(batch, source[0])
+        x_src_2 = self.get_input(batch, source[1])
+        x_src_3 = self.get_input(batch, source[2])
+        input=torch.concat([x_src_1,x_src_2,x_src_3],dim=1)
         skip_pass = 1
 
         if self.stage == 1: 
             xrec, qloss = self(x_tar)
         else:
-            z_src, qloss, _ = self.encode(x_src)
+            h1=self.encode(input[:,0])
+            h2=self.encode(input[:,1])
+            h3=self.encode(input[:,2])
+            h_comp=self.encode_comp(input)
+            h_concat=torch.concat([h1,h2,h3,h_comp],dim=1)
+            h=self.caff(h_concat,src_idx)
+            z_src, qloss, _ = self.quantizer(h)
             z_tar_rec = self.spade(z_src, target)
-            z_tar, _, _ = self.encode(x_tar)
+            z_temp=self.encode(x_tar)
+            z_tar,_,_=self.quantizer(z_temp)
             x_tar = z_tar
             xrec = z_tar_rec
 
@@ -196,17 +219,29 @@ class VQModel(pl.LightningModule):
             return discloss
 
     def validation_step(self, batch, batch_idx):
-        source = random.choice(self.modalities)
         target = random.choice(self.modalities)
-        x_src = self.get_input(batch, source)
+        source = [m for m in self.modalities if m != target]
+        src_idx=self.modalities_to_indices(source)
         x_tar = self.get_input(batch, target)
-        
+        x_src_1 = self.get_input(batch, source[0])
+        x_src_2 = self.get_input(batch, source[1])
+        x_src_3 = self.get_input(batch, source[2])
+        input=torch.concat([x_src_1,x_src_2,x_src_3],dim=1)
+       
+
         if self.stage == 1: 
             xrec, qloss = self(x_tar)
         else:
-            z_src, qloss, _ = self.encode(x_src)
+            h1=self.encode(input[:,0])
+            h2=self.encode(input[:,1])
+            h3=self.encode(input[:,2])
+            h_comp=self.encode_comp(input)
+            h_concat=torch.concat([h1,h2,h3,h_comp],dim=1)
+            h=self.caff(h_concat,src_idx)
+            z_src, qloss, _ = self.quantizer(h)
             z_tar_rec = self.spade(z_src, target)
-            z_tar, _, _ = self.encode(x_tar)
+            z_temp=self.encode(x_tar)
+            z_tar,_,_=self.quantizer(z_temp)
             x_tar = z_tar
             xrec = z_tar_rec
 
