@@ -2,7 +2,7 @@ model:
   base_learning_rate: 4.5e-6
   target: taming.models.vqgan.VQModel
   params:
-    modalities: ['t1', 't1ce', 't2', 'flair']
+    modalities: ["t1n", "t1c", "t2w", "t2f"]
     # ckpt_path: last.ckpt
     stage: 1
     embed_dim: 3
@@ -39,12 +39,8 @@ data:
     train:
       target: taming.data.custom.CustomTrain
       params:
-        data_path: BraTS2021/TrainingData # to be filled
+        data_path: [Task8DataBrats/ASNR-MICCAI-BraTS2023-GLI-Challenge-TrainingData, Task8DataBrats/ASNR-MICCAI-BraTS2023-MET-Challenge-TrainingData, Task8DataBrats/ASNR-MICCAI-BraTS2023-MET-Challenge-TrainingData_Additional] # to be filled
     validation:
       target: taming.data.custom.CustomTest
       params:
-        data_path: BraTS2021/ValidationData # to be filled
-    test:
-      target: taming.data.custom.CustomTest
-      params:
-        data_path: BraTS2021/ValidationData # to be filled
+        data_path: [Task8DataBrats/ASNR-MICCAI-BraTS2023-GLI-Challenge-ValidationData, Task8DataBrats/ASNR-MICCAI-BraTS2023-MET-Challenge-ValidationData] # to be filled

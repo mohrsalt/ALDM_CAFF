@@ -41,7 +41,7 @@ model:
     first_stage_config:
       target: ldm.models.vqgan.VQModel
       params:
-      modalities: ['t1', 't1ce', 't2', 'flair']
+      modalities: ["t1n", "t1c", "t2w", "t2f"]
         ckpt_path: last.ckpt # to be filled
         embed_dim: 3
         n_embed: 8192
@@ -72,15 +72,12 @@ data:
     train:
       target: ldm.data.brats.CustomTrain
       params:
-        data_path: BraTS2021/TrainingData # to be filled
+        data_path: [Task8DataBrats/ASNR-MICCAI-BraTS2023-GLI-Challenge-TrainingData, Task8DataBrats/ASNR-MICCAI-BraTS2023-MET-Challenge-TrainingData, Task8DataBrats/ASNR-MICCAI-BraTS2023-MET-Challenge-TrainingData_Additional] # to be filled
     validation:
       target: ldm.data.brats.CustomTest
       params:
-        data_path: BraTS2021/ValidationData # to be filled
-    test:
-      target: ldm.data.brats.CustomTest
-      params:
-        data_path: BraTS2021/ValidationData # to be filled
+        data_path: [Task8DataBrats/ASNR-MICCAI-BraTS2023-GLI-Challenge-ValidationData, Task8DataBrats/ASNR-MICCAI-BraTS2023-MET-Challenge-ValidationData] # to be filled
+
 
 
 lightning:
