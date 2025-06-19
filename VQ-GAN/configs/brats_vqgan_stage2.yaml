@@ -4,7 +4,7 @@ model:
   params:
     modalities: ["t1n", "t1c", "t2w", "t2f"]
     ignore_keys: ["loss.discriminator.main.0.weight"]
-    ckpt_path: stage1.ckpt
+    ckpt_path: /home/mohor.banerjee/Desktop/BraSyn_2025_Task8/VQ-GAN/logs/2025-06-19T17-04-10_brats_vqgan_stage1/testtube/version_0/checkpoints/epoch=0-step=2978.ckpt
     stage: 2
     embed_dim: 3
     n_embed: 8192
@@ -14,7 +14,7 @@ model:
       resolution: 192
       in_channels: 1
       out_ch: 1
-      ch: 128
+      ch: 64
       ch_mult:
       - 1
       - 1
@@ -45,3 +45,7 @@ data:
       target: taming.data.custom.CustomTest
       params:
         data_path: [/home/mohor.banerjee/Desktop/BraSyn_2025_Task8/Task8DataBrats/ASNR-MICCAI-BraTS2023-GLI-Challenge-ValidationData, /home/mohor.banerjee/Desktop/BraSyn_2025_Task8/Task8DataBrats/ASNR-MICCAI-BraTS2023-MET-Challenge-ValidationData] # to be filled
+    test:
+      target: taming.data.custom.CustomTest
+      params:
+        data_path: [/home/mohor.banerjee/Desktop/BraSyn_2025_Task8/Task8DataBrats/ASNR-MICCAI-BraTS2023-GLI-Challenge-ValidationData, /home/mohor.banerjee/Desktop/BraSyn_2025_Task8/Task8DataBrats/ASNR-MICCAI-BraTS2023-MET-Challenge-ValidationData]

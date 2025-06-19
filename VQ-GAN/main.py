@@ -110,7 +110,7 @@ def get_parser(**parser_kwargs):
 
 def nondefault_trainer_args(opt):
     parser = argparse.ArgumentParser()
-    parser = Trainer.add_argparse_args(parser)
+    #parser = Trainer.add_argparse_args(parser)
     args = parser.parse_args([])
     return sorted(k for k in vars(args) if getattr(opt, k) != getattr(args, k))
 
@@ -314,10 +314,10 @@ class ImageLogger(Callback):
             return True
         return False
 
-    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx):
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
         self.log_img(pl_module, batch, batch_idx, split="train")
 
-    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx):
+    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
         self.log_img(pl_module, batch, batch_idx, split="val")
 
 
@@ -372,7 +372,7 @@ if __name__ == "__main__":
     sys.path.append(os.getcwd())
 
     parser = get_parser()
-    parser = Trainer.add_argparse_args(parser)
+    # parser = Trainer.add_argparse_args(parser)
 
     opt, unknown = parser.parse_known_args()
     if opt.name and opt.resume:
@@ -525,9 +525,12 @@ if __name__ == "__main__":
         callbacks_cfg = OmegaConf.merge(default_callbacks_cfg, callbacks_cfg)
         trainer_kwargs["callbacks"] = [instantiate_from_config(callbacks_cfg[k]) for k in callbacks_cfg]
         
-        from pytorch_lightning.plugins import DDPPlugin
-        trainer = Trainer.from_argparse_args(trainer_opt, **trainer_kwargs,
-                                             plugins=DDPPlugin(find_unused_parameters=True),)
+        from pytorch_lightning.strategies import DDPStrategy
+        # ➕ Add bf16 mixed-precision support
+        trainer_kwargs["precision"] = "bf16-mixed"
+        trainer_kwargs["max_epochs"] = 1
+        trainer = Trainer(**trainer_kwargs,
+                                             strategy=DDPStrategy(find_unused_parameters=True),)
 
         # data
         data = instantiate_from_config(config.data)

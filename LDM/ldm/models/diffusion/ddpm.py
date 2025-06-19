@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from functools import partial
 from tqdm import tqdm
 from torchvision.utils import make_grid
-from pytorch_lightning.utilities.distributed import rank_zero_only
+from lightning_utilities.core.rank_zero import rank_zero_only
 
 from ldm.util import log_txt_as_img, exists, default, ismap, isimage, mean_flat, count_params, instantiate_from_config
 from ldm.modules.ema import LitEma
@@ -472,7 +472,7 @@ class LatentDiffusion(DDPM):
 
     @rank_zero_only
     @torch.no_grad()
-    def on_train_batch_start(self, batch, batch_idx, dataloader_idx):
+    def on_train_batch_start(self, batch, batch_idx, dataloader_idx=0):
         # only for very first batch
         if self.scale_by_std and self.current_epoch == 0 and self.global_step == 0 and batch_idx == 0 and not self.restarted_from_ckpt:
             assert self.scale_factor == 1., 'rather not use custom rescaling and std-rescaling simultaneously'
@@ -480,7 +480,7 @@ class LatentDiffusion(DDPM):
             print("### USING STD-RESCALING ###")
             x = super().get_input(batch, self.first_stage_key)
             x = x.to(self.device)
-            encoder_posterior, _, _ = self.first_stage_model.encode(x) 
+            encoder_posterior, _, _ = self.first_stage_model.encode_caff(x) 
             z = self.get_first_stage_encoding(encoder_posterior).detach()
             del self.scale_factor
             self.register_buffer('scale_factor', 1. / z.flatten().std())
@@ -635,26 +635,30 @@ class LatentDiffusion(DDPM):
             raise NotImplementedError
 
         return fold, unfold, normalization, weighting
+    
+    def modalities_to_indices(self,source):
+        return [self.modalities.index(mod) for mod in source]
+    
 
     @torch.no_grad()
     def get_input(self, batch, k, return_first_stage_outputs=False, force_c_encode=False,
                   cond_key=None, return_original_cond=False, bs=None):
-        source = random.choice(self.modalities)
         target = random.choice(self.modalities)
-        while source == target:
-            target = random.choice(self.modalities)
-            
-        x_src = super().get_input(batch, source)
+        source = [m for m in self.modalities if m != target]
+        src_idx = self.modalities_to_indices(source)
         x_tgt = super().get_input(batch, target)
-
+        x_src_1 = super().get_input(batch, source[0])
+        x_src_2 = super().get_input(batch, source[1])
+        x_src_3 = super().get_input(batch, source[2])
+        input = torch.cat([x_src_1, x_src_2, x_src_3], dim=1) #log_images
         if bs is not None:
-            x_src = x_src[:bs]
+            input = input[:bs]
             x_tgt = x_tgt[:bs]
-        x_src = x_src.to(self.device)
+        input = input.to(self.device)
         x_tgt = x_tgt.to(self.device)
-        z_src, _, _ = self.first_stage_model.encode(x_src)
-        z_tgtl, _, _ = self.first_stage_model.encode(x_src, target)
-        z_tgt, _, _ = self.first_stage_model.encode(x_tgt)
+        z_src, _, _ = self.first_stage_model.encode_caff(input,input_modals=src_idx)
+        z_tgtl, _, _ = self.first_stage_model.encode_caff(input, target, input_modals=src_idx)
+        z_tgt, _, _ = self.first_stage_model.encode_caff(x_tgt)
 
         z_src = self.get_first_stage_encoding(z_src).detach()
         z_tgt = self.get_first_stage_encoding(z_tgt).detach()
@@ -668,7 +672,7 @@ class LatentDiffusion(DDPM):
         if return_first_stage_outputs:
             xrec_src = self.decode_first_stage(z_src)
             xrec_tgt = self.decode_first_stage(z_tgt)
-            out.extend([x_src, x_tgt, xrec_src, xrec_tgt, source, target])
+            out.extend([input, x_tgt, xrec_src, xrec_tgt, source, target])
         return out
 
     @torch.no_grad()
@@ -939,7 +943,7 @@ class LatentDiffusion(DDPM):
         loss_simple = self.get_loss(model_output, target, mean=False).mean([1, 2, 3])
         loss_dict.update({f'{prefix}/loss_simple': loss_simple.mean()})
 
-        logvar_t = self.logvar[t].to(self.device)
+        logvar_t = self.logvar.to(self.device)[t]
         logvar_t = repeat(logvar_t, 'b -> b c', c=loss_simple.shape[1])
         loss = loss_simple / torch.exp(logvar_t) + logvar_t
         # loss = loss_simple / torch.exp(self.logvar) + self.logvar

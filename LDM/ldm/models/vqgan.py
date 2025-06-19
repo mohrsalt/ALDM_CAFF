@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
-
+import copy
 from main import instantiate_from_config
 
 from ldm.models.normalization import SPADEResnetBlock, SPADEGenerator
@@ -12,6 +12,21 @@ from ldm.modules.vqvae.quantize import VectorQuantizer2 as VectorQuantizer
 from ldm.modules.vqvae.quantize import GumbelQuantize
 from ldm.modules.vqvae.quantize import EMAVectorQuantizer
 
+class CHattnblock(nn.Module):
+    def __init__(self, dim=64):
+        super().__init__()
+        self.attn = nn.Sequential(
+            nn.AdaptiveAvgPool3d(1),
+            nn.Conv3d(dim, dim, 1),
+            nn.SiLU(),
+            nn.Conv3d(dim, dim, 1),
+            nn.Sigmoid())
+
+    def forward(self, x):
+        w = self.attn(x)
+        # print(w.shape)
+        return w
+    
 class VQModel(pl.LightningModule):
     def __init__(self,
                  ddconfig,
@@ -26,18 +41,34 @@ class VQModel(pl.LightningModule):
                  monitor=None,
                  remap=None,
                  sane_index_shape=False,  # tell vector quantizer to return indices as bhw
+                 stage=1,
                  ):
         super().__init__()
+        self.automatic_optimization = False
+
         self.image_key = image_key
         self.encoder = Encoder(**ddconfig)
+        ddconfig_new = copy.deepcopy(ddconfig)
+        ddconfig_new['in_channels'] = 3
+        self.encoder_complementary = Encoder(**ddconfig_new) #new
         self.decoder = Decoder(**ddconfig)
         self.loss = instantiate_from_config(lossconfig)
         self.quantize = VectorQuantizer(n_embed, embed_dim, beta=0.25,
-                                        remap=remap, sane_index_shape=sane_index_shape)
+                                        remap=remap, sane_index_shape=sane_index_shape) 
         self.quant_conv = torch.nn.Conv3d(ddconfig["z_channels"], embed_dim, 1)
+
         self.post_quant_conv = torch.nn.Conv3d(embed_dim, ddconfig["z_channels"], 1)
+        self.attn_blocks = nn.ModuleList([CHattnblock(64*2) for i in range(5)]) #new
+        self.conv1 = nn.Conv3d(256, 128, 1) #new
+        
         self.modalities = modalities
         self.spade = SPADEGenerator(modalities)
+        self.conv_out_enc = torch.nn.Conv3d(128,
+                                         3,
+                                         kernel_size=3,
+                                        stride=1,
+                                         padding=1) #new
+        self.stage = stage
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
         self.image_key = image_key
@@ -58,13 +89,40 @@ class VQModel(pl.LightningModule):
         self.load_state_dict(sd, strict=False)
         print(f"Restored from {path}")
 
-    def encode(self, x, target=None):
-        h = self.encoder(x)
-        h = self.quant_conv(h)
-        quant, emb_loss, info = self.quantize(h)
+    def encode_caff(self, input, target=None,input_modals=None):
+        if input.shape[1] == 3:
+            h1=self.encode(input[:,0].unsqueeze(1))
+            h2=self.encode(input[:,1].unsqueeze(1))
+            h3=self.encode(input[:,2].unsqueeze(1))
+            h_comp=self.encoder_complementary(input)
+            h1=h1.unsqueeze(1)
+            h2=h2.unsqueeze(1)
+            h3=h3.unsqueeze(1)
+            h_comp=h_comp.unsqueeze(1)
+            h_concat=torch.concat([h1,h2,h3,h_comp],dim=1)
+            h=self.caff(h_concat,input_modals)
+        else:
+            h=self.encode(input)
+        quant, emb_loss, info = self.quantizer(h)
         if target is not None: quant = self.spade(quant, target)
         return quant, emb_loss, info
+    
+    
+    def encode(self, x):
+        h = self.encoder(x)
+        return h
+        
+    def encode_comp(self, x):
+        h = self.encoder_complementary(x)
+        return h
+    
+    def quantizer(self, h):
+        h = self.conv_out_enc(h)
+        h = self.quant_conv(h)
+        quant, emb_loss, info = self.quantize(h)
 
+        return quant, emb_loss, info
+    
     def decode(self, quant):
         quant = self.post_quant_conv(quant)
         dec = self.decoder(quant)
@@ -75,72 +133,265 @@ class VQModel(pl.LightningModule):
         dec = self.decode(quant_b)
         return dec
 
-    def forward(self, input, target):
-        quant, diff, _ = self.encode(input, target)
+    def forward(self, input, target=None, input_modals=None):
+        if target is None:
+            h=self.encode(input)
+        else:
+            h1=self.encode(input[:,0].unsqueeze(1))
+            h2=self.encode(input[:,1].unsqueeze(1))
+            h3=self.encode(input[:,2].unsqueeze(1))
+            h_comp=self.encoder_complementary(input)
+            h1=h1.unsqueeze(1)
+            h2=h2.unsqueeze(1)
+            h3=h3.unsqueeze(1)
+            h_comp=h_comp.unsqueeze(1)
+            h_concat=torch.concat([h1,h2,h3,h_comp],dim=1)
+            h=self.caff(h_concat,input_modals)
+        #caff
+        print("lolllpl")
+        quant, diff, _ = self.quantizer(h)
+        if target is not None: quant = self.spade(quant, target)
+        print("lolllplopal")
         dec = self.decode(quant)
+        print("kol")
         return dec, diff
 
     def get_input(self, batch, k):
         x = batch[k]
         
         return x.float()
+    
+    def caff(self, net_z, chosen_sources): #check functional similarity to hfeconder
+        """
+        net_z: Tensor of shape (B, 4, C, H, W)
+        chosen_sources: list of 3 indices from [0, 1, 2, 3] indicating input modalities
 
-    def training_step(self, batch, batch_idx, optimizer_idx):
-        source = random.choice(self.modalities)
+        """
+        print("shape: ",net_z.shape)
+        comp_features = net_z[:, -1] 
+        x_fusion_s = torch.zeros_like(comp_features)
+        x_fusion_h = torch.zeros_like(comp_features)
+
+        raw_attns = []  
+        for i, src in enumerate(chosen_sources):
+            attn_map = self.attn_blocks[src](net_z[:, i]) 
+            raw_attns.append(attn_map.unsqueeze(1))  
+
+    
+        comp_attn = self.attn_blocks[-1](net_z[:, -1]).unsqueeze(1)  
+        raw_attns.append(comp_attn)
+
+        x_attns = torch.cat(raw_attns, dim=1)  
+
+    
+        for i in range(3):
+            x_fusion_s += net_z[:, i] * x_attns[:, i]
+        x_fusion_s += net_z[:, -1] * x_attns[:, -1]
+
+    
+        x_attns_soft = F.softmax(x_attns[:, :3], dim=1)  
+        x_attns = torch.cat([x_attns_soft, x_attns[:, 3:]], dim=1)
+
+        for i in range(3):
+            x_fusion_h += net_z[:, i] * x_attns[:, i]
+        x_fusion_h += net_z[:, -1]  # raw residual (no attention weight)
+
+        
+        x_fusion = self.conv1(torch.cat((x_fusion_s, x_fusion_h), dim=1))  
+        return x_fusion
+    
+    def modalities_to_indices(self,source):
+        return [self.modalities.index(mod) for mod in source]
+
+    # def training_step(self, batch, batch_idx, optimizer_idx):
+        
+    #     target = random.choice(self.modalities)
+    #     source = [m for m in self.modalities if m != target]
+    #     src_idx=self.modalities_to_indices(source)
+    #     x_tar = self.get_input(batch, target)
+    #     x_src_1 = self.get_input(batch, source[0])
+    #     x_src_2 = self.get_input(batch, source[1])
+    #     x_src_3 = self.get_input(batch, source[2])
+    #     input=torch.concat([x_src_1,x_src_2,x_src_3],dim=1)
+    #     skip_pass = 1
+
+    #     if self.stage == 1: 
+    #         xrec, qloss = self(x_tar)
+    #     else:
+    #         h1=self.encode(input[:,0])
+    #         h2=self.encode(input[:,1])
+    #         h3=self.encode(input[:,2])
+    #         h_comp=self.encode_comp(input)
+    #         h_concat=torch.concat([h1,h2,h3,h_comp],dim=1)
+    #         h=self.caff(h_concat,src_idx)
+    #         z_src, qloss, _ = self.quantizer(h)
+    #         z_tar_rec = self.spade(z_src, target)
+    #         z_temp=self.encode(x_tar)
+    #         z_tar,_,_=self.quantizer(z_temp)
+    #         x_tar = z_tar
+    #         xrec = z_tar_rec
+
+    #     if optimizer_idx == 0:
+    #         # autoencode
+    #         aeloss, log_dict_ae = self.loss(qloss, x_tar, xrec, optimizer_idx, self.global_step,
+    #                                         last_layer=self.get_last_layer(), skip_pass=skip_pass, split="train")
+
+    #         self.log("train/aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+    #         self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=True)
+    #         return aeloss
+
+    #     if optimizer_idx == 1:
+    #         # discriminator
+    #         discloss, log_dict_disc = self.loss(qloss, x_tar, xrec, optimizer_idx, self.global_step,
+    #                                         last_layer=self.get_last_layer(), skip_pass=skip_pass, split="train")
+    #         self.log("train/discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+    #         self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=True)
+    #         return discloss
+
+    def test_step(self, batch, batch_idx):
+        return self.validation_step(batch, batch_idx)
+    def training_step(self, batch, batch_idx):
+        # MANUAL optimization mode
+        opt_ae, opt_disc = self.optimizers()
+
         target = random.choice(self.modalities)
-        x_src = self.get_input(batch, source)
+        source = [m for m in self.modalities if m != target]
+        src_idx = self.modalities_to_indices(source)
         x_tar = self.get_input(batch, target)
-        if source == target: target = None
-        xrec, qloss = self(x_src, target)
+        x_src_1 = self.get_input(batch, source[0])
+        x_src_2 = self.get_input(batch, source[1])
+        x_src_3 = self.get_input(batch, source[2])
+        input = torch.concat([x_src_1, x_src_2, x_src_3], dim=1)
+        skip_pass = 1
+        print("lol1")
+        if self.stage == 1:
+            xrec, qloss = self(x_tar)
+        else:
+            h1 = self.encode(input[:, 0].unsqueeze(1))
+            
+            h2 = self.encode(input[:, 1].unsqueeze(1))
+            h3 = self.encode(input[:, 2].unsqueeze(1))
+            h_comp = self.encode_comp(input)
+            h1=h1.unsqueeze(1)
+            h2=h2.unsqueeze(1)
+            h3=h3.unsqueeze(1)
+            h_comp=h_comp.unsqueeze(1)
+            h_concat = torch.concat([h1, h2, h3, h_comp], dim=1)
+            h = self.caff(h_concat, src_idx)
+            z_src, qloss, _ = self.quantizer(h)
+            z_tar_rec = self.spade(z_src, target)
+            z_temp = self.encode(x_tar)
+            z_tar, _, _ = self.quantizer(z_temp)
+            x_tar = z_tar
+            xrec = z_tar_rec
 
-        if optimizer_idx == 0:
-            # autoencode
-            aeloss, log_dict_ae = self.loss(qloss, x_tar, xrec, optimizer_idx, self.global_step,
-                                            last_layer=self.get_last_layer(), split="train")
+        # ---- Autoencoder Update ----
+        print("here here")
+        opt_ae.zero_grad()
+        print("here 2")
+        
+        aeloss, log_dict_ae = self.loss(
+            qloss, x_tar, xrec, 0, self.global_step,
+            last_layer=self.get_last_layer(), skip_pass=skip_pass, split="train"
+        )
+        print("here 3")
+        self.manual_backward(aeloss)
+        print("here 4")
+        opt_ae.step()
+        print("here 5")
+        self.log("train/aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=True)
 
-            self.log("train/aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
-            self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=True)
-            return aeloss
+        # ---- Discriminator Update ----
+        opt_disc.zero_grad()
+        discloss, log_dict_disc = self.loss(
+            qloss, x_tar, xrec, 1, self.global_step,
+            last_layer=self.get_last_layer(), skip_pass=skip_pass, split="train"
+        )
+        self.manual_backward(discloss)
+        opt_disc.step()
 
-        if optimizer_idx == 1:
-            # discriminator
-            discloss, log_dict_disc = self.loss(qloss, x_tar, xrec, optimizer_idx, self.global_step,
-                                            last_layer=self.get_last_layer(), split="train")
-            self.log("train/discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
-            self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=True)
-            return discloss
+        self.log("train/discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=True)
+
+        return aeloss + discloss
 
     def validation_step(self, batch, batch_idx):
-        source = random.choice(self.modalities)
         target = random.choice(self.modalities)
-        x_src = self.get_input(batch, source)
+        source = [m for m in self.modalities if m != target]
+        src_idx=self.modalities_to_indices(source)
         x_tar = self.get_input(batch, target)
-        xrec, qloss = self(x_src,  target)
+        x_src_1 = self.get_input(batch, source[0])
+        x_src_2 = self.get_input(batch, source[1])
+        x_src_3 = self.get_input(batch, source[2])
+        input=torch.concat([x_src_1,x_src_2,x_src_3],dim=1)
+       
+
+        if self.stage == 1: 
+            xrec, qloss = self(x_tar)
+        else:
+            h1=self.encode(input[:,0].unsqueeze(1))
+            h2=self.encode(input[:,1].unsqueeze(1))
+            h3=self.encode(input[:,2].unsqueeze(1))
+            h_comp=self.encode_comp(input)
+            h1=h1.unsqueeze(1)
+            h2=h2.unsqueeze(1)
+            h3=h3.unsqueeze(1)
+            h_comp=h_comp.unsqueeze(1)
+            print("shape b4: ",h1.shape)
+            h_concat=torch.concat([h1,h2,h3,h_comp],dim=1)
+            h=self.caff(h_concat,src_idx)
+            z_src, qloss, _ = self.quantizer(h)
+            z_tar_rec = self.spade(z_src, target)
+            z_temp=self.encode(x_tar)
+            z_tar,_,_=self.quantizer(z_temp)
+            x_tar = z_tar
+            xrec = z_tar_rec
+
         aeloss, log_dict_ae = self.loss(qloss, x_tar, xrec, 0, self.global_step,
                                             last_layer=self.get_last_layer(), split="val")
 
         discloss, log_dict_disc = self.loss(qloss, x_tar, xrec, 1, self.global_step,
                                             last_layer=self.get_last_layer(), split="val")
-        rec_loss = log_dict_ae["val/rec_loss"]
-        self.log("val/rec_loss", rec_loss,
-                   prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
-        self.log("val/aeloss", aeloss,
-                   prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
+        rec_loss = log_dict_ae.pop("val/rec_loss", None)
+        if rec_loss is not None:
+            self.log("val/rec_loss", rec_loss,
+                    prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
         self.log_dict(log_dict_ae)
         self.log_dict(log_dict_disc)
         return self.log_dict
 
     def configure_optimizers(self):
         lr = self.learning_rate
-        opt_ae = torch.optim.Adam(list(self.encoder.parameters())+
-                                  list(self.decoder.parameters())+
-                                  list(self.quantize.parameters())+
-                                  list(self.quant_conv.parameters())+
-                                  list(self.spade.parameters()) +
-                                  list(self.post_quant_conv.parameters()),
-                                  lr=lr, betas=(0.5, 0.9))
-        opt_disc = torch.optim.Adam(self.loss.discriminator.parameters(),
-                                    lr=lr, betas=(0.5, 0.9))
+        if self.stage == 1:
+            for p in self.spade.parameters(): p.requires_grad = False
+            for block in self.attn_blocks:
+                for param in block.parameters():
+                    param.requires_grad = False
+            for p in self.encoder_complementary.parameters(): p.requires_grad = False
+            for p in self.conv1.parameters(): p.requires_grad = False
+            for p in self.encoder.parameters(): p.requires_grad = True
+            for p in self.decoder.parameters(): p.requires_grad = True
+            opt_ae = torch.optim.Adam(list(self.encoder.parameters()) +
+                                  list(self.decoder.parameters()) +
+                                  list(self.quantize.parameters()) +
+                                  list(self.quant_conv.parameters()) +
+                                  list(self.post_quant_conv.parameters()) +
+                                  list(self.conv_out_enc.parameters()), lr=lr, betas=(0.5, 0.9))
+        else:
+            for p in self.spade.parameters(): p.requires_grad = True
+            for p in self.encoder.parameters(): p.requires_grad = False
+            for p in self.decoder.parameters(): p.requires_grad = False
+            params = (
+    list(self.spade.parameters()) +
+    list(self.encoder_complementary.parameters()) +
+    list(self.conv1.parameters()) +
+    list(self.attn_blocks.parameters())
+)
+
+            opt_ae = torch.optim.Adam(params, lr=lr, betas=(0.5, 0.9))
+
+        opt_disc = torch.optim.Adam(self.loss.discriminator.parameters(), lr=lr, betas=(0.5, 0.9))
         return [opt_ae, opt_disc], []
 
     def get_last_layer(self):
@@ -148,20 +399,32 @@ class VQModel(pl.LightningModule):
 
     def log_images(self, batch, **kwargs):
         log = dict()
-        source = random.choice(self.modalities)
         target = random.choice(self.modalities)
-        x_src = self.get_input(batch, source)
+        source = [m for m in self.modalities if m != target]
+        src_idx=self.modalities_to_indices(source)
         x_tar = self.get_input(batch, target)
-        x_src = x_src.to(self.device)
+        x_src_1 = self.get_input(batch, source[0])
+        x_src_2 = self.get_input(batch, source[1])
+        x_src_3 = self.get_input(batch, source[2])
+        input=torch.concat([x_src_1,x_src_2,x_src_3],dim=1)
+
+
+
+
+        x_tar = self.get_input(batch, target)
         x_tar = x_tar.to(self.device)
-        xrec, _ = self(x_src, target)
-        if x_src.shape[1] > 3:
-            assert xrec.shape[1] > 3
-            x_src = self.to_rgb(x_src)
-            xrec = self.to_rgb(xrec)
-        log["source"] = x_src
+        if self.stage == 1: 
+            target = None
+            src_idx=None
+            input=x_tar
+        xrec, _ = self(input, target,src_idx)
+
+        log["source"] = input
         log["target"] = x_tar
-        log[f"recon_{source}_to_{target}"] = xrec
+        if self.stage == 1: 
+            log["recon"] = xrec
+        else:
+            log[f"recon_{source}_to_{target}"] = xrec
         return log
 
     def to_rgb(self, x):

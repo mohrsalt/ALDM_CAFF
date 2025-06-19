@@ -13,7 +13,7 @@ model:
       resolution: 192
       in_channels: 1
       out_ch: 1
-      ch: 128
+      ch: 64
       ch_mult:
       - 1
       - 1
@@ -41,6 +41,10 @@ data:
       params:
         data_path: [/home/mohor.banerjee/Desktop/BraSyn_2025_Task8/Task8DataBrats/ASNR-MICCAI-BraTS2023-GLI-Challenge-TrainingData, /home/mohor.banerjee/Desktop/BraSyn_2025_Task8/Task8DataBrats/ASNR-MICCAI-BraTS2023-MET-Challenge-TrainingData, /home/mohor.banerjee/Desktop/BraSyn_2025_Task8/Task8DataBrats/ASNR-MICCAI-BraTS2023-MET-Challenge-TrainingData_Additional] # to be filled
     validation:
+      target: taming.data.custom.CustomTest
+      params:
+        data_path: [/home/mohor.banerjee/Desktop/BraSyn_2025_Task8/Task8DataBrats/ASNR-MICCAI-BraTS2023-GLI-Challenge-ValidationData, /home/mohor.banerjee/Desktop/BraSyn_2025_Task8/Task8DataBrats/ASNR-MICCAI-BraTS2023-MET-Challenge-ValidationData] # to be filled
+    test:
       target: taming.data.custom.CustomTest
       params:
         data_path: [/home/mohor.banerjee/Desktop/BraSyn_2025_Task8/Task8DataBrats/ASNR-MICCAI-BraTS2023-GLI-Challenge-ValidationData, /home/mohor.banerjee/Desktop/BraSyn_2025_Task8/Task8DataBrats/ASNR-MICCAI-BraTS2023-MET-Challenge-ValidationData] # to be filled
