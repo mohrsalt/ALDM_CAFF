@@ -40,8 +40,8 @@ data:
     train:
       target: taming.data.custom.CustomTrain
       params:
-        data_path: [Task8DataBrats/ASNR-MICCAI-BraTS2023-GLI-Challenge-TrainingData, Task8DataBrats/ASNR-MICCAI-BraTS2023-MET-Challenge-TrainingData, Task8DataBrats/ASNR-MICCAI-BraTS2023-MET-Challenge-TrainingData_Additional] # to be filled
+        data_path: [/home/mohor.banerjee/Desktop/BraSyn_2025_Task8/Task8DataBrats/ASNR-MICCAI-BraTS2023-GLI-Challenge-TrainingData, /home/mohor.banerjee/Desktop/BraSyn_2025_Task8/Task8DataBrats/ASNR-MICCAI-BraTS2023-MET-Challenge-TrainingData, /home/mohor.banerjee/Desktop/BraSyn_2025_Task8/Task8DataBrats/ASNR-MICCAI-BraTS2023-MET-Challenge-TrainingData_Additional] # to be filled
     validation:
       target: taming.data.custom.CustomTest
       params:
-        data_path: [Task8DataBrats/ASNR-MICCAI-BraTS2023-GLI-Challenge-ValidationData, Task8DataBrats/ASNR-MICCAI-BraTS2023-MET-Challenge-ValidationData] # to be filled
+        data_path: [/home/mohor.banerjee/Desktop/BraSyn_2025_Task8/Task8DataBrats/ASNR-MICCAI-BraTS2023-GLI-Challenge-ValidationData, /home/mohor.banerjee/Desktop/BraSyn_2025_Task8/Task8DataBrats/ASNR-MICCAI-BraTS2023-MET-Challenge-ValidationData] # to be filled
