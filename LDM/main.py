@@ -390,19 +390,14 @@ class CUDACallback(Callback):
         torch.cuda.synchronize(torch.cuda.current_device())
         self.start_time = time.time()
 
-    def on_train_epoch_end(self, trainer, pl_module, outputs):
+    def on_train_epoch_end(self, outputs):
         torch.cuda.synchronize(torch.cuda.current_device())
         max_memory = torch.cuda.max_memory_allocated(torch.cuda.current_device()) / 2 ** 20
         epoch_time = time.time() - self.start_time
 
-        try:
-            max_memory = trainer.training_type_plugin.reduce(max_memory)
-            epoch_time = trainer.training_type_plugin.reduce(epoch_time)
-
-            rank_zero_info(f"Average Epoch time: {epoch_time:.2f} seconds")
-            rank_zero_info(f"Average Peak memory {max_memory:.2f}MiB")
-        except AttributeError:
-            pass
+        rank_zero_info(f"Epoch time: {epoch_time:.2f} seconds")
+        rank_zero_info(f"Peak memory: {max_memory:.2f} MiB")
+       
 
 
 if __name__ == "__main__":
