@@ -355,9 +355,14 @@ class DDPM(pl.LightningModule):
         with self.ema_scope():
             _, loss_dict_ema = self.shared_step(batch)
             loss_dict_ema = {key + '_ema': loss_dict_ema[key] for key in loss_dict_ema}
-        self.log_dict(loss_dict_no_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
-        self.log_dict(loss_dict_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
+        self.log_dict({k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict_no_ema.items()},
+                    prog_bar=False, logger=True, on_step=False, on_epoch=True)
+        self.log_dict({k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict_ema.items()},
+                    prog_bar=False, logger=True, on_step=False, on_epoch=True)
 
+    def test_step(self, batch, batch_idx):
+        return self.validation_step(batch, batch_idx)
+    
     def on_train_batch_end(self, *args, **kwargs):
         if self.use_ema:
             self.model_ema(self.model)
@@ -672,7 +677,7 @@ class LatentDiffusion(DDPM):
         if return_first_stage_outputs:
             xrec_src = self.decode_first_stage(z_src)
             xrec_tgt = self.decode_first_stage(z_tgt)
-            out.extend([input, x_tgt, xrec_src, xrec_tgt, source, target])
+            out.extend([x_tgt, x_tgt, xrec_src, xrec_tgt, source, target])
         return out
 
     @torch.no_grad()

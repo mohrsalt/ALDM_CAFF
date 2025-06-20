@@ -20,3 +20,5 @@ nscc
 TO CHECK-> TRAINABLE LAYERS + UTILITY to do after ongoing
 
 baseline code n metrics reporting
+
+POSTERIOR: UNDERSTAND LOGGING IN THIS REPO

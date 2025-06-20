@@ -390,7 +390,7 @@ class CUDACallback(Callback):
         torch.cuda.synchronize(torch.cuda.current_device())
         self.start_time = time.time()
 
-    def on_train_epoch_end(self, outputs):
+    def on_train_epoch_end(self, trainer, pl_module):
         torch.cuda.synchronize(torch.cuda.current_device())
         max_memory = torch.cuda.max_memory_allocated(torch.cuda.current_device()) / 2 ** 20
         epoch_time = time.time() - self.start_time
