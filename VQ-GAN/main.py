@@ -13,6 +13,8 @@ from pytorch_lightning.callbacks import ModelCheckpoint, Callback, LearningRateM
 from pytorch_lightning.utilities import rank_zero_only
 from taming.data.utils import custom_collate
 import warnings
+import wandb
+
 warnings.filterwarnings("ignore")
 
 
@@ -234,33 +236,38 @@ class ImageLogger(Callback):
 
     @rank_zero_only
     def _wandb(self, pl_module, images, batch_idx, split):
-        raise ValueError("No way wandb")
+      
         grids = dict()
-        for k in images:
-            grid = torchvision.utils.make_grid(images[k])
-            grids[f"{split}/{k}"] = wandb.Image(grid)
-        pl_module.logger.experiment.log(grids)
+      #  for k in images:
+      #      grid = torchvision.utils.make_grid(images[k])
+      #      grids[f"{split}/{k}"] = wandb.Image(grid)
+      #  pl_module.logger.experiment.log(grids)
 
     @rank_zero_only
     def _testtube(self, pl_module, images, batch_idx, split):
         return
-        # for k in images:
-        #     grid = torchvision.utils.make_grid(images[k])
-        #     grid = (grid+1.0)/2.0 # -1,1 -> 0,1; c,h,w
-
-        #     tag = f"{split}/{k}"
-            # pl_module.logger.experiment.add_image(
-            #     tag, grid,
-            #     global_step=pl_module.global_step)
+    @rank_zero_only
+    def _get_affine(self, src_path):
+        M = nib.load(src_path).affine[:3, :3]
+        P = np.zeros_like(M)
+        max_abs_indices = np.argmax(np.abs(M), axis=1)
+        for i, col_idx in enumerate(max_abs_indices):
+            P[i, col_idx] = np.sign(M[i, col_idx])
+        
+        P_inv = np.linalg.inv(P)
+        new_M = M @ P_inv
+        affine = np.eye(4)
+        affine[:3, :3] = new_M
+         
+        return affine
 
     @rank_zero_only
-    def log_local(self, save_dir, split, images,
+    def log_local(self, save_dir, split, images, src_path,
                   global_step, current_epoch, batch_idx):
         root = os.path.join(save_dir, "images", split)
         for k in images:
-            img = images[k].squeeze(0)  # remove batch dimension, now it's (1, 192, 192, 160)
+            img = images[k][0] #.squeeze(0)  # remove batch dimension, now it's (C, H, W, D)
             img = img.permute(1, 2, 3, 0)  # reorder dimensions to be compatible with nibabel
-
             img = img.numpy()
 
             filename = "{}_gs-{:06}_e-{:06}_b-{:06}.nii.gz".format(
@@ -271,7 +278,8 @@ class ImageLogger(Callback):
             path = os.path.join(root, filename)
             os.makedirs(os.path.split(path)[0], exist_ok=True)
 
-            nifti_img = nib.Nifti1Image(img, np.eye(4))  # you might want to replace np.eye(4) with the correct affine matrix
+            affine = self._get_affine(src_path)
+            nifti_img = nib.Nifti1Image(img, affine)
             nib.save(nifti_img, path)
 
     def log_img(self, pl_module, batch, batch_idx, split="train"):
@@ -287,6 +295,7 @@ class ImageLogger(Callback):
 
             with torch.no_grad():
                 images = pl_module.log_images(batch, split=split, pl_module=pl_module)
+                src_path = batch["path"][0]
 
             for k in images:
                 N = min(images[k].shape[0], self.max_images)
@@ -296,7 +305,7 @@ class ImageLogger(Callback):
                     if self.clamp:
                         images[k] = torch.clamp(images[k], -1., 1.)
 
-            self.log_local(pl_module.logger.save_dir, split, images,
+            self.log_local(pl_module.logger.save_dir, split, images, src_path,
                            pl_module.global_step, pl_module.current_epoch, batch_idx)
 
             logger_log_images = self.logger_log_images.get(logger, lambda *args, **kwargs: None)
@@ -425,6 +434,9 @@ if __name__ == "__main__":
         trainer_config = lightning_config.get("trainer", OmegaConf.create())
         # default to ddp
         trainer_config["distributed_backend"] = "ddp"
+        trainer_config["gpus"] = 4
+        trainer_config["accelerator"]="gpu"
+        trainer_config["strategy"] = "ddp"
         for k in nondefault_trainer_args(opt):
             trainer_config[k] = getattr(opt, k)
         if not "gpus" in trainer_config:
@@ -454,7 +466,7 @@ if __name__ == "__main__":
                 "params": {
                     "name": nowname,
                     "save_dir": logdir,
-                    "offline": opt.debug,
+                    "offline": False,
                     "id": nowname,
                 }
             },
@@ -466,7 +478,7 @@ if __name__ == "__main__":
                 }
             },
         }
-        default_logger_cfg = default_logger_cfgs["testtube"]
+        default_logger_cfg = default_logger_cfgs["wandb"]
         logger_cfg = lightning_config.logger or OmegaConf.create() # 
         logger_cfg = OmegaConf.merge(default_logger_cfg, logger_cfg)
         trainer_kwargs["logger"] = instantiate_from_config(logger_cfg)
@@ -528,7 +540,7 @@ if __name__ == "__main__":
         from pytorch_lightning.strategies import DDPStrategy
         # ➕ Add bf16 mixed-precision support
         trainer_kwargs["precision"] = "bf16-mixed"
-        trainer_kwargs["max_epochs"] = 1
+        trainer_kwargs["max_epochs"] = 2
         trainer = Trainer(**trainer_kwargs,
                                              strategy=DDPStrategy(find_unused_parameters=True),)
 
@@ -544,7 +556,7 @@ if __name__ == "__main__":
         bs, base_lr = config.data.params.batch_size, config.model.base_learning_rate
         if not cpu:
             gpus = lightning_config.trainer.gpus
-            ngpu = len(str(gpus).split(',')) if isinstance(gpus, str) else gpus
+            ngpu = lightning_config.trainer.gpus if isinstance(lightning_config.trainer.gpus, int) else len(lightning_config.trainer.gpus.strip(',').split(','))
         else:
             ngpu = 1
         accumulate_grad_batches = 1 # lightning_config.trainer.accumulate_grad_batches or
