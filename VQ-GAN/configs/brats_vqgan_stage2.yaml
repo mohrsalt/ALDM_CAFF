@@ -3,7 +3,7 @@ model:
   target: taming.models.vqgan.VQModel
   params:
     num_classes: 4
-    ckpt_path: /home/users/ntu/mohor001/BraSyn_2025_Task8/VQ-GAN/logs/2025-06-25T14-32-47_brats_vqgan_stage1/lightning_logs/2025-06-25T14-32-47_brats_vqgan_stage1/checkpoints/epoch=1-step=1492.ckpt
+    ckpt_path: /home/users/ntu/mohor001/BraSyn_2025_Task8/VQ-GAN/logs/2025-06-25T21-12-41_brats_vqgan_stage1/lightning_logs/2025-06-25T21-12-41_brats_vqgan_stage1/checkpoints/epoch=99-step=74600.ckpt
     ignore_keys: ["loss.discriminator.main.0.weight", "loss.discriminator.main.0.bias", "loss.discriminator.main.11.weight","loss.discriminator.main.11.bias"]
     stage: 2
     embed_dim: 4
